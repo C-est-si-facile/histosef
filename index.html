@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frise</title>
+<meta name="description" content="Frise chronologique des vidéos de la chaîne, par période historique.">
+<style>
+  :root {
+    --bg: #fafaf8;
+    --ink: #111;
+    --muted: #8a8a85;
+    --bar: clamp(64px, 16vh, 150px);  /* épaisseur de la flèche */
+    --stem: clamp(24px, 6vh, 56px);   /* longueur du petit trait entre la flèche et le texte */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0e0e0d; --ink: #f2f2ee; --muted: #77776f; }
+  }
+
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 400 13px/1.45 Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  a { color: inherit; text-decoration: none; }
+  a:focus-visible { outline: 1px solid var(--ink); outline-offset: 6px; }
+
+  /* En-tête et pied : presque invisibles */
+  .corner {
+    position: fixed; z-index: 3;
+    font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+    transition: color .2s;
+  }
+  a.corner:hover { color: var(--ink); }
+  .name { top: 28px; left: 32px; }
+  .hint { bottom: 28px; right: 32px; transition: opacity .6s; pointer-events: none; }
+  .hint.gone { opacity: 0; }
+
+  /* boutons réseaux sociaux */
+  .social { position: fixed; z-index: 4; top: 20px; right: 32px; display: flex; gap: 10px; }
+  .social a {
+    width: 34px; height: 34px; border-radius: 50%;
+    display: grid; place-items: center;
+    border: 1px solid color-mix(in srgb, var(--muted) 55%, transparent);
+    color: var(--muted);
+    transition: color .2s, border-color .2s, background .2s;
+  }
+  .social a:hover, .social a:focus-visible { color: var(--bg); background: var(--ink); border-color: var(--ink); outline: none; }
+  .social a[aria-disabled="true"] { opacity: .35; pointer-events: none; }
+  .social svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* La frise */
+  .scroller {
+    position: absolute; inset: 0;
+    overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  .scroller::-webkit-scrollbar { display: none; }
+  .scroller.scrolls { cursor: grab; }
+  .scroller.drag { cursor: grabbing; }
+  .scroller.drag .item * { pointer-events: none; }
+
+  /* la flèche occupe toute la largeur de l'écran (défilement seulement sur très petits écrans) */
+  .track {
+    position: relative; height: 100%;
+    display: flex; align-items: stretch;
+    width: 100%; min-width: 760px;
+    padding: 0 2vw 0 5vw;
+  }
+
+  /* une période = une portion colorée de la flèche */
+  .period {
+    --c: #999;
+    position: relative;
+    display: flex;
+    min-width: 130px;
+  }
+  .bar {
+    position: absolute; left: 0; right: 0; top: 50%;
+    height: var(--bar); margin-top: calc(var(--bar) / -2);
+    background: var(--c);
+    display: flex; align-items: center;
+  }
+  .period + .period .bar { box-shadow: inset 2px 0 0 var(--bg); }
+  .plabel {
+    margin: 0 14px;
+    color: #fff; line-height: 1.3;
+  }
+  .pname  { display: block; font-size: clamp(10px, 1vw, 16px); font-weight: 600; letter-spacing: .12em; text-transform: uppercase; }
+  .pyears { display: block; font-size: clamp(9px, .8vw, 12px); letter-spacing: .04em; opacity: .72; margin-top: 2px; }
+
+  /* la pointe de la flèche */
+  .tip {
+    flex: 0 0 clamp(60px, 7vw, 110px); align-self: center;
+    height: calc(var(--bar) * 1.8);
+    margin-left: -1px;
+    background: var(--c);
+    clip-path: polygon(0 0, 100% 50%, 0 100%);
+  }
+
+  /* une vidéo */
+  .item { position: relative; flex: 1 1 0; min-width: 0; }
+  .item a { position: absolute; inset: 0; display: block; pointer-events: none; }
+  .item .dot, .item .stem, .item .label, .item .tag { pointer-events: auto; }
+
+  .dot {
+    position: absolute; left: 50%;
+    width: 10px; height: 10px; margin-left: -5px;
+    border-radius: 50%; background: var(--bg); border: 1.5px solid var(--c);
+    transition: background .2s, transform .2s;
+  }
+  .stem {
+    position: absolute; left: 50%; width: 1px; margin-left: -.5px;
+    height: var(--stem); background: var(--c);
+  }
+  .label {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    width: calc(180% - 10px); text-align: center;   /* deux cases de large : le voisin du même côté est 2 cases plus loin */
+    font-size: clamp(10px, .95vw, 15px); line-height: 1.35;
+    transition: opacity .2s;
+  }
+  .up   .dot   { bottom: calc(50% + var(--bar) / 2); margin-bottom: -5px; }
+  .down .dot   { top:    calc(50% + var(--bar) / 2); margin-top:    -5px; }
+  .up   .stem  { bottom: calc(50% + var(--bar) / 2 + 5px); }
+  .down .stem  { top:    calc(50% + var(--bar) / 2 + 5px); }
+  .up   .label { bottom: calc(50% + var(--bar) / 2 + 5px + var(--stem) + 10px); }
+  .down .label { top:    calc(50% + var(--bar) / 2 + 5px + var(--stem) + 10px); }
+
+  .year  { display: block; font-size: .85em; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--c); margin-bottom: 3px; }
+  .title { display: block; font-weight: 500; text-wrap: balance; }
+
+  /* au survol : on isole la vidéo visée */
+  .track:has(a:hover) .item:not(:hover) .label,
+  .track:has(a:focus-visible) .item:not(:focus-within) .label { opacity: .28; }
+  .item:hover .dot, .item:focus-within .dot { background: var(--c); transform: scale(1.5); }
+  .item:hover .title { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+
+  /* beaucoup de vidéos : seuls les points restent visibles, le titre apparaît au survol */
+  .dense .dot { width: 9px; height: 9px; margin-left: -4.5px; background: var(--ink); border-color: var(--bg); }
+  .dense .item:hover .dot, .dense .item:focus-within .dot { background: var(--c); border-color: var(--ink); }
+  .dense .up   .dot { margin-bottom: -4.5px; }
+  .dense .down .dot { margin-top: -4.5px; }
+  .dense .dot::after, .dense .stem::after { content: ""; position: absolute; left: -9px; right: -9px; top: -9px; bottom: -9px; }
+  .dense .stem::after { top: 0; bottom: 0; }
+  .dense .label {
+    width: max-content; max-width: 250px; text-align: left; z-index: 5;
+    padding: 7px 11px; background: var(--bg); border: 1px solid var(--c);
+    opacity: 0; visibility: hidden; pointer-events: none;
+    transition: opacity .15s, visibility .15s;
+  }
+  .dense .item:hover, .dense .item:focus-within { z-index: 6; }
+  .dense .item:hover .label, .dense .item:focus-within .label { opacity: 1; visibility: visible; }
+  .dense .track:has(a:hover) .item:not(:hover) .label { opacity: 0; }
+  .dense .item:hover .title { text-decoration: none; }
+
+  /* le mot au bout de chaque trait (vertical, pour tenir dans l'espace entre deux points) */
+  .tag { display: none; }
+  .dense .tag {
+    display: block; position: absolute; left: 50%; transform: translateX(-50%);
+    writing-mode: vertical-rl; white-space: nowrap;
+    max-height: clamp(70px, 15vh, 120px); overflow: hidden; text-overflow: ellipsis;
+    font-size: clamp(10px, .85vw, 13px); line-height: 1; letter-spacing: .02em;
+    color: var(--ink); opacity: .82; pointer-events: auto;
+    transition: color .2s, opacity .2s;
+  }
+  .dense .up   .tag { bottom: calc(50% + var(--bar) / 2 + 5px + var(--stem) + 6px); transform: translateX(-50%) rotate(180deg); }
+  .dense .down .tag { top:    calc(50% + var(--bar) / 2 + 5px + var(--stem) + 6px); }
+  .dense .item:hover .tag, .dense .item:focus-within .tag { color: var(--c); opacity: 1; }
+
+  /* cadre de pub pour une vidéo */
+  .promo {
+    position: fixed; z-index: 4; left: 50%; bottom: 22px; transform: translateX(-50%);
+    width: min(330px, calc(100vw - 40px));
+  }
+  .promo[hidden] { display: none; }
+  .promo-link {
+    display: flex; gap: 12px; align-items: center;
+    padding: 8px 30px 8px 8px;
+    background: var(--bg); border: 1px solid color-mix(in srgb, var(--muted) 45%, transparent); border-radius: 8px;
+    transition: border-color .2s;
+  }
+  .promo-link:hover, .promo-link:focus-visible { border-color: var(--ink); outline: none; }
+  .promo-img { flex: 0 0 96px; width: 96px; aspect-ratio: 16 / 9; border-radius: 4px; background: color-mix(in srgb, var(--muted) 25%, transparent); object-fit: cover; display: block; }
+  .promo-text { min-width: 0; line-height: 1.35; }
+  .promo-label { display: block; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
+  .promo-title { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; font-size: 12px; font-weight: 500; }
+  .promo-x {
+    position: absolute; top: 4px; right: 6px; width: 22px; height: 22px;
+    border: 0; background: none; color: var(--muted); font: inherit; font-size: 15px; line-height: 1; cursor: pointer;
+  }
+  .promo-x:hover { color: var(--ink); }
+  @media (max-height: 560px) { .promo { display: none; } }
+  @media (max-width: 600px) { .promo { bottom: 54px; } }
+
+  /* moteur de recherche */
+  .search { position: fixed; z-index: 5; top: 16px; left: 50%; transform: translateX(-50%); width: min(320px, calc(100vw - 340px)); }
+  .search input {
+    width: 100%; height: 34px; padding: 0 14px; border-radius: 17px;
+    border: 1px solid color-mix(in srgb, var(--muted) 55%, transparent); background: transparent;
+    color: var(--ink); font: inherit; font-size: 13px; outline: none;
+    transition: border-color .2s;
+  }
+  .search input::placeholder { color: var(--muted); }
+  .search input:focus { border-color: var(--ink); }
+  .results {
+    margin-top: 6px; padding: 4px; max-height: min(50vh, 340px); overflow: auto;
+    background: var(--bg); border: 1px solid color-mix(in srgb, var(--muted) 45%, transparent); border-radius: 10px;
+  }
+  .results[hidden] { display: none; }
+  .results a { display: flex; gap: 10px; align-items: baseline; padding: 7px 10px; border-radius: 6px; font-size: 12px; line-height: 1.35; }
+  .results a:hover, .results a:focus-visible { background: color-mix(in srgb, var(--muted) 18%, transparent); outline: none; }
+  .results .ry { flex: 0 0 auto; min-width: 56px; font-weight: 600; font-size: 11px; letter-spacing: .06em; color: var(--c); }
+  .results .none { padding: 8px 10px; font-size: 12px; color: var(--muted); }
+  /* pendant une recherche : seuls les résultats restent bien visibles sur la frise */
+  .item { transition: opacity .2s; }
+  .searching .item:not(.match) { opacity: .12; }
+  .searching .item.match .dot, .item.hit .dot { background: var(--c); transform: scale(1.5); }
+  .searching .item.match .tag, .item.hit .tag { color: var(--c); opacity: 1; font-weight: 600; }
+  .dense .item.hit { z-index: 6; }
+  .dense .item.hit .label { opacity: 1; visibility: visible; }
+
+  /* apparition douce */
+  @media (prefers-reduced-motion: no-preference) {
+    .item { animation: in .7s both; animation-delay: calc(var(--i) * 40ms); }
+    @keyframes in { from { opacity: 0; } }
+  }
+
+  @media (max-width: 600px) {
+    .name { top: 22px; left: 20px; }
+    .social { top: 14px; right: 20px; gap: 8px; }
+    .search { top: 58px; left: 20px; right: 20px; width: auto; transform: none; }
+    .hint { bottom: 22px; right: 20px; }
+  }
+</style>
+</head>
+<body>
+
+<a class="corner name" id="channel" target="_blank" rel="noopener"></a>
+
+<main class="scroller" id="scroller" tabindex="-1" aria-label="Frise chronologique des vidéos">
+  <div class="track" id="track"></div>
+</main>
+
+<nav class="social" id="social" aria-label="Réseaux sociaux"></nav>
+
+<div class="search" id="search" role="search">
+  <input id="q" type="search" placeholder="Rechercher…" autocomplete="off" aria-label="Rechercher une vidéo par mot-clé">
+  <div class="results" id="results" hidden></div>
+</div>
+
+<aside class="promo" id="promo" hidden></aside>
+
+<span class="corner hint" id="hint">Glisser ↔</span>
+
+<script>
+/* ──────────────────────────────────────────────────────────
+   À MODIFIER : ta chaîne et tes vidéos
+   - "year" : l'année de l'événement (négatif = avant J.-C., ex. -52)
+   - "tag"  : un ou deux mots, écrits au bout du trait
+   - "kw"   : mots-clés supplémentaires, utilisés seulement par la recherche
+   - "title": le titre complet, affiché au survol
+   - "id"   : la partie après  watch?v=  dans le lien de la vidéo
+              (ex. https://www.youtube.com/watch?v=AbCdEf12345 → "AbCdEf12345")
+   - Si "id" est vide, le point renvoie vers la chaîne.
+   La période (couleur) est trouvée toute seule d'après l'année.
+   ────────────────────────────────────────────────────────── */
+const CHANNEL = {
+  name: "Histosef",
+  url:  "https://www.youtube.com/@LHistosef"
+};
+
+/* Les trois boutons en haut à droite. Un bouton sans lien reste grisé. */
+const SOCIAL = [
+  { name: "Instagram", url: "https://www.instagram.com/lhistosef/",
+    icon: '<rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.3" cy="6.7" r=".6"/>' },
+  { name: "TikTok",    url: "https://www.tiktok.com/@lhistosef",
+    icon: '<path d="M15 3v10.5a4.5 4.5 0 1 1-4.5-4.5"/><path d="M15 3c.3 2.5 2 4.2 4.5 4.5"/>' },
+  { name: "Facebook",  url: "",
+    icon: '<path d="M14 21v-8h2.7l.5-3.3H14V7.6c0-1 .4-1.7 1.8-1.7h1.5V3.1C17 3 16 3 15 3c-2.5 0-4 1.5-4 4.2v2.5H8.3V13H11v8"/>' }
+];
+
+/* Le cadre de pub en bas de page. Pour mettre en avant une autre vidéo :
+   change "id" (une vidéo de la liste ci-dessous) et, si tu veux, "label".
+   Pour le retirer : mets  id: ""  */
+const PROMO = {
+  id:    "GWtu7rdN0bc",
+  label: "Dernière vidéo"
+};
+
+/* Les périodes : "from" = année de début. Elles se suivent dans l'ordre. */
+const PERIODS = [
+  { name: "Préhistoire",          from: -Infinity, years: "avant –3300", color: "#9c8465" },
+  { name: "Antiquité",            from: -3300,     years: "3300 av. J.-C. – 476",  color: "#c2603a" },
+  { name: "Moyen Âge",            from: 476,       years: "476 – 1492",            color: "#5f7d5a" },
+  { name: "Temps modernes",       from: 1492,      years: "1492 – 1789",           color: "#3f6590" },
+  { name: "Époque contemporaine", from: 1789,      years: "1789 – aujourd'hui",    color: "#6c4f86" }
+];
+
+const VIDEOS = [
+  { year: -1332, tag: "Toutankhamon", kw: "égypte pharaon momie malédiction", title: "Toutankhamon - Une vie de Pharaon", id: "NIguX_p8kvU" },
+  { year: -63, tag: "Cicéron", kw: "rome orateur république avocat", title: "Cicéron (le défenseur du peuple)", id: "VY1yEr_BESc" },
+  { year: 900, tag: "Vikings", kw: "scandinavie thorgal nordiques drakkar", title: "Le Viking le plus iconique !", id: "BURAzY0ZwNg" },
+  { year: 1118, tag: "Abélard", kw: "héloïse philosophie scolastique amour", title: "Le seul intellectuel du Moyen Âge ?", id: "GwNwmBS1NeE" },
+  { year: 1200, tag: "Juifs, argent", kw: "antisémitisme argent banque idées reçues", title: "Pourquoi dit-on que les juifs sont riches ?", id: "_YGd8knI_x4" },
+  { year: 1200, tag: "Sexe médiéval", kw: "sexualité mœurs amour église", title: "Le sexe au Moyen Âge", id: "Ut1E573UTaA" },
+  { year: 1316, tag: "Pas de reine", kw: "salique femmes royaume succession patriarcat", title: "Pourquoi n'y a-t-il pas de Reine en France ?", id: "jRio9uwnDY0" },
+  { year: 1328, tag: "Cent Ans : causes", kw: "angleterre guerre 100 ans édouard valois causes", title: "Pourquoi la guerre de Cent Ans a eu lieu ?", id: "G58IsNR14oM" },
+  { year: 1337, tag: "Cent Ans I", kw: "guerre 100 ans angleterre début", title: "La Guerre de Cent Ans sans t'embêter ! (Partie 1)", id: "uHA34pCHem0" },
+  { year: 1429, tag: "Cent Ans II", kw: "guerre 100 ans jeanne d'arc fin", title: "Guerre de Cent Ans - Qui a gagné ? (Partie 2)", id: "NNE1EN9wLxg" },
+  { year: 1461, tag: "Louis XI", kw: "roi france mélenchon", title: "Pourquoi tout le monde aime Louis XI ??", id: "79KekDEeksA" },
+  { year: 1503, tag: "De Vinci", kw: "renaissance inventeur peintre mona lisa", title: "Léonard de Vinci (inventeur-menteur)", id: "dJDgKhxdEbo" },
+  { year: 1559, tag: "Joutes", kw: "tournoi béhourd chevalier henri ii jeux", title: "Les combats médiévaux (béhourd, tournoi, joute, ...)", id: "w7EVx91hiZc" },
+  { year: 1624, tag: "Richelieu", kw: "cardinal louis xiii ministre", title: "La face caché de Richelieu", id: "mG4nBBathWo" },
+  { year: 1681, tag: "Vauban", kw: "fortification île de ré forteresse louis xiv citadelle", title: "Le piège mortel que Vauban a inventé pour ses ennemis", id: "xW1GijTWDPM" },
+  { year: 1789, tag: "Gauche", kw: "droite politique partis clivage", title: "Le Problème avec la Gauche", id: "DbNf6GXvaZM" },
+  { year: 1792, tag: "Révolution", kw: "révolution française 1789 école", title: "La face cachée de la Révolution Française... ou Tout ce que vous n'avez pas appris à l'école", id: "73T8QKjqPBo" },
+  { year: 1793, tag: "Louis XVI", kw: "roi guillotine monarchie révolution", title: "La face cachée de Louis 16", id: "333-0i225xg" },
+  { year: 1794, tag: "La Terreur", kw: "révolution robespierre danton marat directoire terreur", title: "La plus dangereuse période de l'histoire de France ?", id: "mTzKoRNXe5w" },
+  { year: 1804, tag: "Napoléon", kw: "empereur bonaparte", title: "Napoléon : homme providentiel ou despote tyrannique ?", id: "CM7QnYNlQh4" },
+  { year: 1814, tag: "Talleyrand", kw: "diplomate politique riche", title: "Comment cet homme est devenu riche et célèbre ?", id: "9ztAV7RXRWc" },
+  { year: 1815, tag: "Restauration", kw: "romantisme napoléon génération chute", title: "Comment la Restauration a BRISÉ une génération (et créé le Romantisme)", id: "3-GbkgdYvTY" },
+  { year: 1852, tag: "Marx", kw: "fascisme communisme brumaire karl philosophie", title: "J'explique Marx et sa pensée du fascisme", id: "vnx5deMyc0w" },
+  { year: 1913, tag: "H!tler peintre", kw: "hitler nazi peinture art dictateur", title: "H!tler était-il un bon peintre ? (non, mais un homme de son siècle oui)", id: "KFLGKT9ebLQ" },
+  { year: 1921, tag: "Ungern", kw: "mongolie dalaï-lama baron fou russe communistes", title: "Le Dalaï-lama sacre cet exterminateur de communistes", id: "bJjTxekAZ4s" },
+  { year: 1928, tag: "Frères musulmans", kw: "islam confrérie islamisme égypte", title: "Que cachent les Frères musulmans ?", id: "GWtu7rdN0bc" },
+  { year: 1930, tag: "Algérie", kw: "colonisation algérie colonie", title: "Vivre en Algérie française ?", id: "KJVbxmgtS1o" },
+  { year: 1931, tag: "Projet fou", kw: "allemagne allemands projet", title: "Le projet le plus fou des Allemands (...le deuxième)", id: "D6kAAyRXEbA" },
+  { year: 1932, tag: "Céline", kw: "écrivain littérature louis-ferdinand auteur", title: "Céline un auteur à lire si vous êtes de Gauche !", id: "VIPchfcpzPQ" },
+  { year: 1934, tag: "Extrême droite", kw: "politique fascisme histoire", title: "Les 7 vérités sur l'extrême droite !!", id: "-jWOKPPnrQs" },
+  { year: 1934, tag: "Puyi", kw: "chine dernier empereur communisme prison", title: "Un Empereur Communiste (Prison, URSS et Jardinage)", id: "lGzhrHMytRI" },
+  { year: 1936, tag: "JO 1936", kw: "jeux olympiques berlin riefenstahl nazi sport", title: "Les JO catastrophiques de 1936", id: "D_n65p3-X6A" },
+  { year: 1936, tag: "Sous-marins", kw: "cousteau mer plongée océan marine", title: "La guerre sous-marine que la France a gagnée contre les USA", id: "q5cBp0zdvMo" },
+  { year: 1938, tag: "Germania", kw: "nazi architecture hitler berlin ville", title: "La ville Nazie : Germania", id: "AT1nhxFTz-4" },
+  { year: 1940, tag: "Pétain", kw: "vichy collaboration maréchal guerre", title: "Pétain croyait-il bien faire ?", id: "J8p7mfqmf0Q" },
+  { year: 1944, tag: "Débarquement", kw: "normandie guerre mondiale alliés défense", title: "Comment les Allemands ont prévu (ou non) le débarquement ?", id: "Sqwjt9YtsfA" },
+  { year: 1944, tag: "Marc Bloch", kw: "historien résistant panthéon", title: "L'incroyable destin de cet historien (panthéonisé)", id: "zf46Or3GZ80" },
+  { year: 1968, tag: "De Gaulle", kw: "général charles mai 68 algérie", title: "Les problèmes du général De Gaulle", id: "MlO8OMg85R8" },
+  { year: 1972, tag: "Marchais", kw: "georges parti communiste pcf", title: "Le plus STYLÉ des communistes", id: "CUy0BQb-uBI" },
+  { year: 1978, tag: "Aldo Moro", kw: "italie brigades rouges terrorisme assassinat", title: "Tué par 12 BALLES (dans un coffre de voiture)", id: "q6IsHtywJEc" },
+  { year: 1980, tag: "Sartre", kw: "philosophe existentialisme jean-paul", title: "Pourquoi les gens détestent Jean-Paul Sartre ?", id: "NYWAnCjSxME" },
+  { year: 1980, tag: "Bourdieu", kw: "sociologue philosophie domination", title: "Je simplifie Bourdieu (à bas la domination)", id: "VDVGRDFkD6M" },
+  { year: 1986, tag: "Al Capone", kw: "gangster chicago mafia prohibition coffre-fort", title: "Le coffre fort d'Al Capone a été ouvert !!", id: "_S23YXfBt_M" },
+  { year: 2025, tag: "Pape François", kw: "argentine dictature militaire pape religion", title: "Pape François : De la DICTATURE MILITAIRE à la REPENTANCE (L'histoire choquante)", id: "L3hsJ9Q5wEc" }
+];
+/* ────────────────────────────────────────────────────────── */
+
+const $ = id => document.getElementById(id);
+const scroller = $("scroller"), track = $("track");
+
+const channel = $("channel");
+channel.textContent = CHANNEL.name;
+channel.href = CHANNEL.url;
+document.title = CHANNEL.name;
+
+$("social").innerHTML = SOCIAL.map(s => s.url
+  ? `<a href="${s.url}" target="_blank" rel="noopener" aria-label="${s.name}" title="${s.name}"><svg viewBox="0 0 24 24">${s.icon}</svg></a>`
+  : `<a aria-label="${s.name} (lien à ajouter)" title="${s.name} : lien à ajouter" aria-disabled="true"><svg viewBox="0 0 24 24">${s.icon}</svg></a>`
+).join("");
+
+const promoVideo = VIDEOS.find(v => v.id === PROMO.id);
+if (promoVideo) {
+  const box = $("promo");
+  box.innerHTML = `
+    <a class="promo-link" href="https://www.youtube.com/watch?v=${encodeURIComponent(promoVideo.id)}" target="_blank" rel="noopener">
+      <img class="promo-img" alt="" loading="lazy" src="https://i.ytimg.com/vi/${encodeURIComponent(promoVideo.id)}/mqdefault.jpg" onerror="this.style.visibility='hidden'">
+      <span class="promo-text"><span class="promo-label">${PROMO.label}</span><span class="promo-title">${promoVideo.title.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]))}</span></span>
+    </a>
+    <button class="promo-x" type="button" aria-label="Fermer">×</button>`;
+  box.hidden = false;
+  box.querySelector(".promo-x").addEventListener("click", () => { box.hidden = true; });
+}
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+/* minuscules, sans accents ni ponctuation : « Révolution » et « revolution » se valent */
+const norm = s => String(s).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+const fmtYear = y => y < 0 ? `${-y} av. J.-C.` : `${y}`;
+
+const sorted = [...VIDEOS].sort((a, b) => a.year - b.year);
+const periodOf = y => { let k = 0; PERIODS.forEach((p, i) => { if (y >= p.from) k = i; }); return k; };
+
+let n = 0;
+track.innerHTML = PERIODS.map((p, k) => {
+  const list = sorted.filter(v => periodOf(v.year) === k), nb = list.length;
+  const items = list.map(v => {
+    const i = n++;
+    const href = v.id ? `https://www.youtube.com/watch?v=${encodeURIComponent(v.id)}` : CHANNEL.url;
+    return `
+      <div class="item ${i % 2 ? "down" : "up"}" style="--i:${i}" data-h="${esc(norm(`${v.tag || ""} ${v.title} ${v.kw || ""} ${v.year < 0 ? -v.year + " av jc" : v.year}`))}">
+        <a href="${href}" target="_blank" rel="noopener" aria-label="${esc(v.title)} — ${fmtYear(v.year)}">
+          <span class="stem"></span><span class="dot"></span><span class="tag">${esc(v.tag || "")}</span>
+          <span class="label"><span class="year">${fmtYear(v.year)}</span><span class="title">${esc(v.title)}</span></span>
+        </a>
+      </div>`;
+  }).join("");
+  return `
+    <section class="period" style="--c:${p.color};flex:${Math.max(nb, 1)} 1 0">
+      <div class="bar"><div class="plabel"><span class="pname">${esc(p.name)}</span><span class="pyears">${esc(p.years)}</span></div></div>
+      ${items}
+    </section>`;
+}).join("") + `<div class="tip" style="--c:${PERIODS[PERIODS.length - 1].color}"></div>`;
+
+/* plus de 16 vidéos : on n'affiche que les points, le titre apparaît au survol */
+if (n > 16) {
+  document.body.classList.add("dense");
+  track.style.minWidth = Math.max(760, n * 24) + "px";
+}
+
+/* recherche par mots-clés : tous les mots tapés doivent se trouver dans le titre, le mot de la frise, les mots-clés ou l'année */
+const q = $("q"), results = $("results");
+const items = [...document.querySelectorAll(".item")];
+const runSearch = () => {
+  const words = norm(q.value).split(" ").filter(Boolean);
+  track.classList.remove("searching");
+  document.body.classList.toggle("searching", words.length > 0);
+  items.forEach(it => it.classList.remove("match", "hit"));
+  if (!words.length) { results.hidden = true; results.innerHTML = ""; return; }
+  const found = items.filter(it => words.every(w => it.dataset.h.includes(w)));
+  found.forEach(it => it.classList.add("match"));
+  if (found.length && !fits()) found[0].scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+  results.hidden = false;
+  results.innerHTML = found.length
+    ? found.map((it, k) => {
+        const a = it.querySelector("a");
+        return `<a href="${a.href}" target="_blank" rel="noopener" data-k="${k}" style="--c:${getComputedStyle(it).getPropertyValue("--c")}">
+          <span class="ry">${it.querySelector(".year").textContent}</span><span>${it.querySelector(".title").innerHTML}</span></a>`;
+      }).join("")
+    : `<div class="none">Aucun résultat</div>`;
+  results.querySelectorAll("a").forEach(r => {
+    const it = found[+r.dataset.k];
+    r.addEventListener("mouseenter", () => it.classList.add("hit"));
+    r.addEventListener("mouseleave", () => it.classList.remove("hit"));
+  });
+};
+q.addEventListener("input", runSearch);
+q.addEventListener("keydown", e => { if (e.key === "Escape") { q.value = ""; runSearch(); q.blur(); } });
+window.addEventListener("keydown", e => {
+  if (e.key === "/" && document.activeElement !== q) { e.preventDefault(); q.focus(); }
+});
+
+/* molette verticale → défilement horizontal */
+scroller.addEventListener("wheel", e => {
+  if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+    scroller.scrollLeft += e.deltaY;
+    e.preventDefault();
+  }
+}, { passive: false });
+
+/* glisser à la souris */
+let down = false, startX = 0, startLeft = 0, moved = false;
+scroller.addEventListener("pointerdown", e => {
+  if (e.pointerType !== "mouse") return;
+  down = true; moved = false; startX = e.clientX; startLeft = scroller.scrollLeft;
+});
+window.addEventListener("pointermove", e => {
+  if (!down) return;
+  const dx = e.clientX - startX;
+  if (Math.abs(dx) > 4) { moved = true; scroller.classList.add("drag"); }
+  if (moved) scroller.scrollLeft = startLeft - dx;
+});
+window.addEventListener("pointerup", () => { down = false; scroller.classList.remove("drag"); });
+
+/* flèches du clavier */
+window.addEventListener("keydown", e => {
+  if (e.key === "ArrowRight") scroller.scrollBy({ left: 230, behavior: "smooth" });
+  if (e.key === "ArrowLeft")  scroller.scrollBy({ left: -230, behavior: "smooth" });
+});
+
+/* « Glisser » ne s'affiche que si l'écran est trop petit pour voir toute la flèche */
+const fits = () => scroller.scrollWidth <= scroller.clientWidth + 1;
+const refresh = () => {
+  scroller.classList.toggle("scrolls", !fits());
+  $("hint").style.display = fits() ? "none" : "";
+};
+refresh();
+window.addEventListener("resize", refresh);
+scroller.addEventListener("scroll", () => $("hint").classList.add("gone"), { once: true });
+setTimeout(() => $("hint").classList.add("gone"), 6000);
+</script>
+</body>
+</html>
